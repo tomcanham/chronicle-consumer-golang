@@ -1,2 +1,2 @@
 # chronicle-consumer-golang
-Golang-based Chronicle consumer
+Golang based Chronicle consumer
