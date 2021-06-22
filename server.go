@@ -12,14 +12,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Block struct {
-	BlockNumber int `json:"block_num"`
-}
-
 type Message struct {
-	Type    int32
-	Options int32
-	Block   interface{}
+	Type       int32
+	TypeString string
+	Options    int32
+	Data       map[string]interface{}
 }
 
 type ChronicleConsumer struct {
@@ -32,18 +29,34 @@ type ChronicleConsumer struct {
 	LastAck      int
 }
 
+var MessageTypes = map[int32]string{
+	1001: "fork",
+	1002: "block",
+	1003: "tx",
+	1004: "abi",
+	1005: "abiRemoved",
+	1006: "abiError",
+	1007: "tableRow",
+	1008: "encoderError",
+	1009: "pause",
+	1010: "blockCompleted",
+	1011: "permission",
+	1012: "permissionLink",
+	1013: "accMetadata",
+}
+
 const (
 	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
+	writeWait = 60 * time.Second
 
 	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
+	pongWait = 120 * time.Second
 
 	// Send pings to peer with this period. Must be less than pongWait.
 	pingPeriod = (pongWait * 9) / 10
 
 	// Maximum message size allowed from peer.
-	maxMessageSize = 4096
+	maxMessageSize = 64 * 1024
 )
 
 var upgrader = websocket.Upgrader{
@@ -124,11 +137,10 @@ func (c *ChronicleConsumer) pingHandler() {
 	for {
 		select {
 		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			} else {
-				log.Print("PING!")
+				log.Print("--> PING!")
 			}
 
 		case _, ok := <-c.ShutdownFlag:
@@ -146,11 +158,19 @@ func (c *ChronicleConsumer) messagePump(conn *websocket.Conn) {
 	defer c.Shutdown()
 
 	c.conn.SetReadLimit(maxMessageSize)
-	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(pongWait))
-		log.Print("PONG!")
+		log.Print("<-- PONG!")
+
 		return nil
+	})
+
+	oldPingHandler := c.conn.PingHandler()
+	c.conn.SetPingHandler(func(appData string) error {
+		log.Print("<-- PING!")
+		result := oldPingHandler(appData)
+		log.Print("--> PONG!")
+
+		return result
 	})
 
 	// sends periodic pings until the shutdown signal is sent
@@ -193,27 +213,34 @@ func (c *ChronicleConsumer) messagePump(conn *websocket.Conn) {
 	}
 }
 
-func (c *ChronicleConsumer) decodeMessage(msgType, msgOptions int32, data []byte) (*Message, error) {
-	block := Block{}
+func (c *ChronicleConsumer) decodeMessage(msgType, msgOptions int32, bytes []byte) (*Message, error) {
+	var data map[string]interface{}
 
-	if err := json.Unmarshal(data, &block); err != nil {
+	if err := json.Unmarshal(bytes, &data); err != nil {
 		return nil, err
 	}
 
+	typeString, ok := MessageTypes[msgType]
+
+	if !ok {
+		return nil, fmt.Errorf("could not find message type %d", msgType)
+	}
+
 	return &Message{
-		Type:    msgType,
-		Options: msgOptions,
-		Block:   &block,
+		Type:       msgType,
+		TypeString: typeString,
+		Options:    msgOptions,
+		Data:       data,
 	}, nil
 }
 
-func (c *ChronicleConsumer) AckBlock(block *Block) error {
-	if block.BlockNumber > c.LastAck {
-		log.Printf("ACK: %d", block.BlockNumber)
-		err := c.conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprint(block.BlockNumber)))
-		c.LastAck = block.BlockNumber
+func (c *ChronicleConsumer) AckBlock(blockNumber int) error {
+	if blockNumber > c.LastAck {
+		log.Printf("ACK: %d", blockNumber)
+		err := c.conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprint(blockNumber)))
+		c.LastAck = blockNumber
 		return err
 	} else {
-		return fmt.Errorf("ack block number too small; last ack sent was %d, this block is %d", c.LastAck, block.BlockNumber)
+		return fmt.Errorf("ack block number too small; last ack sent was %d, this block is %d", c.LastAck, blockNumber)
 	}
 }

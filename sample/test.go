@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 
 	consumer "github.com/tomcanham/chronicle-consumer-golang"
 )
 
 func main() {
-	server, err := consumer.Create(8899, 100, "/")
+	server, err := consumer.Create(12345, 100, "/")
 	if err != nil {
 		fmt.Printf("Error creating consumer: %v", err)
 		return
@@ -18,13 +19,15 @@ func main() {
 	for {
 		select {
 		case message := <-server.Messages:
-			switch message.Type {
-			case 1003:
-				block := message.Block.(*consumer.Block)
-				server.AckBlock(block)
-				// fmt.Printf("Got block: %+v\n", message.Block.(*server.Block))
-			}
+			fmt.Printf("Got message type: %d (%s) data: %+v\n", message.Type, message.TypeString, message.Data)
 
+			fieldName := "block_num"
+			offset := 0
+			if message.Type == 1001 /* fork */ {
+				offset = -1
+			}
+			blockNum, _ := strconv.Atoi(message.Data[fieldName].(string))
+			server.AckBlock(blockNum + offset)
 		case _, ok := <-server.ShutdownFlag:
 			if !ok {
 				fmt.Println("SHUTTING DOWN!")
